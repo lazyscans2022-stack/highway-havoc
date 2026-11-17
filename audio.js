@@ -6,15 +6,32 @@
 //  M = mute everything, N = toggle music.
 // =====================================================================
 
-const MUSIC_BPM = 68;
-// soothing progression: Am9 - Fmaj7 - Cmaj7 - Em7 (MIDI note numbers)
+// ---- rhythmic retro arcade driving track (original composition) ----
+const MUSIC_BPM = 132;
+// one chord per bar: Am - F - G - Em (MIDI note numbers)
 const MUSIC_CHORDS = [
-  { bass: 45, pad: [57, 60, 64, 71] },
-  { bass: 41, pad: [53, 57, 60, 64] },
-  { bass: 36, pad: [55, 59, 60, 64] },
-  { bass: 40, pad: [55, 59, 62, 64] },
+  { bass: 45, tones: [57, 60, 64] },
+  { bass: 41, tones: [53, 57, 60] },
+  { bass: 43, tones: [55, 59, 62] },
+  { bass: 40, tones: [52, 55, 59] },
 ];
-const ARP = [0, 2, 1, 3, 2, 1, 3, 2];
+// 8-bar lead melody in eighth notes: MIDI note, 0 = rest, -1 = hold previous note
+const MELODY = [
+  69, 0, 72, 74, 76, 0, 74, 72,
+  72, -1, 69, -1, 65, 67, 69, 0,
+  71, 0, 74, 76, 79, -1, 76, 74,
+  76, -1, -1, 0, 74, 72, 71, 0,
+  81, 0, 79, 76, 74, 0, 76, 79,
+  77, -1, 76, 74, 72, -1, 69, 0,
+  74, 76, 79, 81, 79, -1, 76, 74,
+  76, -1, -1, -1, 0, 0, 0, 0,
+];
+// drums per bar of 16 sixteenth-steps
+const KICK = [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0];
+const SNARE = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1];
+const ARP = [0, 1, 2, 1, 0, 1, 2, 1, 0, 2, 1, 2, 0, 1, 2, 1];
+// 32-bar song form: intro (8) -> full with melody (16) -> breakdown (8)
+const SECTION = bar => { const b = bar % 32; return b < 8 ? 'intro' : b < 24 ? 'full' : 'break'; };
 const GEARS = [170, 300, 430, 560, 700, 900];   // top speed (px/s) of each gear
 const midiHz = m => 440 * Math.pow(2, (m - 69) / 12);
 
@@ -120,59 +137,119 @@ const sfx = {
   },
   engine(speed, on) { this.drive({ speed, on }); },   // used when pausing / game over
 
-  // ---------- background music ----------
+  // ---------- background music: rhythmic retro driving track ----------
+  // A 16th-note step sequencer scheduled slightly ahead on the audio clock.
   startMusic() {
     if (!this.ac || this.musicTimer) return;
     this.mNext = this.ac.currentTime + 0.3; this.mStep = 0;
-    this.musicTimer = setInterval(() => this.schedMusic(), 100);
+    this.musicTimer = setInterval(() => this.schedMusic(), 90);
   },
   schedMusic() {
-    const ac = this.ac, eighth = 60 / MUSIC_BPM / 2;
-    while (this.mNext < ac.currentTime + 0.6) {
-      this.musicStep(this.mStep, this.mNext, eighth);
-      this.mNext += eighth; this.mStep++;
+    const ac = this.ac, six = 60 / MUSIC_BPM / 4;
+    while (this.mNext < ac.currentTime + 0.5) {
+      this.musicStep(this.mStep, this.mNext, six);
+      this.mNext += six; this.mStep++;
     }
   },
-  musicStep(step, t, eighth) {
-    const ch = MUSIC_CHORDS[Math.floor(step / 16) % MUSIC_CHORDS.length];
-    if (step % 16 === 0) {
-      for (const n of ch.pad) this.pad(midiHz(n), t, eighth * 16);
-      this.bass(midiHz(ch.bass), t, eighth * 7);
+  musicStep(step, t, six) {
+    const s = step % 16, bar = Math.floor(step / 16);
+    const sec = SECTION(bar), ch = MUSIC_CHORDS[bar % MUSIC_CHORDS.length];
+    const fill = bar % 8 === 7 && s >= 12;           // drum fill into each new phrase
+
+    // --- drums ---
+    if (sec !== 'break') {
+      if (KICK[s] || (fill && s % 2 === 0)) this.kick(t);
+      if (sec === 'full' && (SNARE[s] || (fill && s % 2 === 1))) this.snare(t, fill ? 0.12 : 0.17);
+      if (sec === 'intro' && s === 12) this.snare(t, 0.1);
+    } else if (s === 0 && bar % 2 === 0) this.kick(t, 0.25);
+    if (s % 2 === 0) this.hat(t, s % 4 === 2 ? 0.05 : 0.025, false);   // 8ths, accented off-beats
+    else if (sec === 'full') this.hat(t, 0.012, false);                // ghost 16ths
+    if (s === 14 && sec !== 'break') this.hat(t, 0.04, true);           // open hat
+
+    // --- pumping octave bass on every 8th ---
+    if (s % 2 === 0 && sec !== 'break') {
+      const n = ch.bass + (s % 4 === 2 ? 12 : 0);
+      this.bass(midiHz(n), t, six * 1.7, sec === 'intro' ? 0.055 : 0.07);
+    } else if (sec === 'break' && s === 0) this.bass(midiHz(ch.bass), t, six * 15, 0.06);
+
+    // --- chord pad at the start of each bar ---
+    if (s === 0) for (const n of ch.tones) this.pad(midiHz(n), t, six * 16, sec === 'break' ? 0.02 : 0.01);
+
+    // --- 16th arpeggio (quiet under the melody, louder in the breakdown) ---
+    if (sec !== 'intro' || bar % 8 >= 4) {
+      const n = ch.tones[ARP[s]] + 12;
+      this.pluck(midiHz(n), t, sec === 'break' ? 0.022 : 0.011, 0.25);
     }
-    if (step % 16 === 8) this.bass(midiHz(ch.bass + 7 > 52 ? ch.bass : ch.bass + 7), t, eighth * 7);
-    // gentle arpeggio, with breathing gaps
-    const phrase = Math.floor(step / 64) % 2;
-    if ((step % 2 === 0 || phrase === 1) && Math.random() < 0.85) {
-      const n = ch.pad[ARP[step % 8]] + 12 + (step % 32 > 27 ? 12 : 0);
-      this.pluck(midiHz(n), t, phrase ? 0.016 : 0.02);
+
+    // --- lead melody (8th notes) in the full section ---
+    if (sec === 'full' && s % 2 === 0) {
+      const i = ((bar - 8) % 8) * 8 + s / 2, note = MELODY[i];
+      if (note > 0) {
+        let len = 1; while (i + len < MELODY.length && MELODY[i + len] === -1) len++;
+        this.lead(midiHz(note), t, six * 2 * len);
+      }
     }
   },
-  pad(f, t, dur) {
+  kick(t, vol = 0.55) {
+    const ac = this.ac, o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.14);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+    o.connect(g); g.connect(this.musicBus); o.start(t); o.stop(t + 0.3);
+  },
+  snare(t, vol) {
+    const ac = this.ac, n = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    n.buffer = this.noiseBuf; f.type = 'bandpass'; f.frequency.value = 1900; f.Q.value = 0.8;
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    n.connect(f); f.connect(g); g.connect(this.musicBus); n.start(t, Math.random()); n.stop(t + 0.18);
+    const o = ac.createOscillator(), og = ac.createGain();
+    o.type = 'triangle'; o.frequency.setValueAtTime(220, t); o.frequency.exponentialRampToValueAtTime(140, t + 0.08);
+    og.gain.setValueAtTime(vol * 0.6, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+    o.connect(og); og.connect(this.musicBus); o.start(t); o.stop(t + 0.12);
+  },
+  hat(t, vol, open) {
+    const ac = this.ac, n = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    n.buffer = this.noiseBuf; f.type = 'highpass'; f.frequency.value = 7000;
+    const d = open ? 0.22 : 0.035;
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0005, t + d);
+    n.connect(f); f.connect(g); g.connect(this.musicBus); n.start(t, Math.random()); n.stop(t + d + 0.02);
+  },
+  bass(f, t, dur, vol) {
+    const ac = this.ac, o = ac.createOscillator(), lp = ac.createBiquadFilter(), g = ac.createGain();
+    o.type = 'sawtooth'; o.frequency.value = f;
+    lp.type = 'lowpass'; lp.Q.value = 4;
+    lp.frequency.setValueAtTime(900, t); lp.frequency.exponentialRampToValueAtTime(220, t + dur);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+    o.connect(lp); lp.connect(g); g.connect(this.musicBus); o.start(t); o.stop(t + dur + 0.02);
+  },
+  pad(f, t, dur, vol) {
     const ac = this.ac, g = ac.createGain(), lp = ac.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 900;
-    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.016, t + 1.6);
-    g.gain.setValueAtTime(0.016, t + dur - 0.4); g.gain.linearRampToValueAtTime(0, t + dur + 1.8);
-    for (const [type, det] of [['triangle', 0], ['sine', 5], ['sine', -6]]) {
-      const o = ac.createOscillator(); o.type = type; o.frequency.value = f; o.detune.value = det;
-      o.connect(lp); o.start(t); o.stop(t + dur + 2);
+    lp.type = 'lowpass'; lp.frequency.value = 1100;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.3);
+    g.gain.setValueAtTime(vol, t + dur - 0.2); g.gain.linearRampToValueAtTime(0, t + dur + 0.3);
+    for (const det of [-7, 7]) {
+      const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det;
+      o.connect(lp); o.start(t); o.stop(t + dur + 0.4);
     }
     lp.connect(g); g.connect(this.musicBus);
   },
-  bass(f, t, dur) {
+  pluck(f, t, vol, dur = 0.3) {
     const ac = this.ac, o = ac.createOscillator(), g = ac.createGain();
-    o.type = 'sine'; o.frequency.value = f;
-    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.06, t + 0.08);
-    g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
-    o.connect(g); g.connect(this.musicBus); o.start(t); o.stop(t + dur + 0.05);
+    o.type = 'triangle'; o.frequency.value = f;
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+    o.connect(g); g.connect(this.musicBus); o.start(t); o.stop(t + dur + 0.02);
   },
-  pluck(f, t, vol) {
-    const ac = this.ac, o = ac.createOscillator(), o2 = ac.createOscillator(), g = ac.createGain();
-    o.type = 'sine'; o.frequency.value = f; o2.type = 'triangle'; o2.frequency.value = f * 2;
-    const g2 = ac.createGain(); g2.gain.value = 0.25;
-    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0005, t + 1.4);
-    o.connect(g); o2.connect(g2); g2.connect(g);
+  lead(f, t, dur) {
+    const ac = this.ac, o = ac.createOscillator(), o2 = ac.createOscillator(), lp = ac.createBiquadFilter(), g = ac.createGain();
+    o.type = 'square'; o.frequency.value = f;
+    o2.type = 'square'; o2.frequency.value = f; o2.detune.value = 9;
+    const vib = ac.createOscillator(), vg = ac.createGain();      // gentle vibrato
+    vib.frequency.value = 5.5; vg.gain.value = 6; vib.connect(vg); vg.connect(o.detune); vg.connect(o2.detune);
+    lp.type = 'lowpass'; lp.frequency.value = 2400;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.028, t + 0.01);
+    g.gain.setValueAtTime(0.024, t + Math.max(0.02, dur - 0.05)); g.gain.linearRampToValueAtTime(0, t + dur + 0.04);
+    o.connect(lp); o2.connect(lp); lp.connect(g);
     g.connect(this.musicBus); g.connect(this.delay);
-    o.start(t); o2.start(t); o.stop(t + 1.5); o2.stop(t + 1.5);
+    for (const x of [o, o2, vib]) { x.start(t); x.stop(t + dur + 0.06); }
   },
 };

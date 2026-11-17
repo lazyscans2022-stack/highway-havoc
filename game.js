@@ -263,9 +263,11 @@ function spawnCiv(initial = false) {
 
 function spawnEnemy(dm) {
   const p = player;
+  // enemies unlock by region: rammers from the start (grassland), tyre busters
+  // from the desert onwards, vans from the deep forest onwards
   const types = ['rammer'];
-  if (dm > 350) types.push('puncture', 'puncture');
-  if (dm > 900) types.push('van', 'van');
+  if (p.w >= BIOME_LEN) types.push('puncture', 'puncture');
+  if (p.w >= BIOME_LEN * 2) types.push('van', 'van');
   const type = pick(types);
   let behind = type === 'rammer' ? true : Math.random() < 0.55;
   const w = behind ? camD - rand(90, 160) : camD + H + rand(80, 160);
@@ -1017,7 +1019,10 @@ function director(dt) {
   }
   enemyT -= dt;
   if (enemyT <= 0 && dm > 150 && !p.dead) {
-    const max = 1 + Math.floor(diff * 3.6);
+    // never more than 3 attackers at once during the first two trips through all
+    // the biomes (28.8 km); after that up to 4
+    const loop = Math.floor(p.w / (BIOME_LEN * NB));
+    const max = Math.min(loop < 2 ? 3 : 4, 1 + Math.floor(diff * 3.6));
     if (cars.filter(isEnemy).length < max) spawnEnemy(dm);
     enemyT = lerp(7, 2.6, diff) * rand(0.7, 1.3);
   }
